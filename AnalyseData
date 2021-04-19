@@ -1,0 +1,115 @@
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import interpolate
+from scipy import linalg
+import math
+
+def read(path):
+    data = pd.read_csv(path, sep = ' ', names=['time', 'a1', 'w1', 'I1_real', 'zero', 'I1_theor', 'a2', 'w2', 'I2_real', 'zero1', 'I2_theor', 'A1', 'V1', 'p1', 'A2', 'V2', 'p2'])
+    data = data.drop(columns = {'zero', 'zero1'})
+    data = data.drop_duplicates(subset = 'time', keep = 'last', inplace = False)
+
+    encoder_resolution = 2 * np.pi / 8192
+    nominal_current = 11
+    k_t = 0.05 
+    kI = 6.08
+    current_coef = k_t * nominal_current / 1000
+
+    data['a1'] = encoder_resolution * (data[['a1']] - data[['a1']].mean())
+    data['a2'] = -encoder_resolution * (data[['a2']] - data[['a2']].mean())
+    data['a2'] = data['a1'] + data['a2']
+    data['I1_real'] = kI * current_coef * (data[['I1_real']] - data[['I1_real']].mean())
+    data['I2_real'] = -current_coef * (data[['I2_real']] - data[['I2_real']].mean()) * kI
+    data['I1_real'] = data['I1_real'] - data['I2_real']
+
+    a = np.arange(0, len(data))
+    data.index = a
+    return data
+
+def AB(data):
+    
+    def pollydiff(R, win, deg):
+            n = len(data)
+            n_win = 2 * win + 1
+            tau = np.linspace(-1, 1, n_win)
+            T = pd.DataFrame()
+            for d in range(3, -1, -1):
+                T[4 - d] = pow(tau, d)
+            X1 = np.asmatrix(T)
+            Q = linalg.pinv(X1)
+
+            new_time = np.linspace(data['time'][0], data['time'][n - 1], n)
+            f = interpolate.interp1d(data['time'], R)
+            x = f(new_time)
+            data['a11'] = x
+
+            y = data['a11']
+            X = pd.DataFrame()
+            for w in range (0, n_win):
+                a = np.array(y.iloc[w : n - n_win + w])
+                X[w] = a 
+            X = X.transpose()
+            X1 = np.asmatrix(X)
+
+            P = Q * X1
+
+            sfrq = n / (data['time'][n-1] - data['time'][0])
+            time_scale = sfrq / win 
+
+            x = np.ravel(P[3])
+            dx = np.ravel(P[2]) * time_scale
+            ddx = 2.0 * np.ravel(P[1]) * time_scale**2
+
+            return (x, dx, ddx)
+
+    win = 25
+    y1, dy1, ddy1 = pollydiff(data['a1'], win, 3)
+    y2, dy2, ddy2 = pollydiff(data['a2'], win, 3)
+    I1, dI1, ddI1 = pollydiff(data['I1_real'], win, 3)
+    I2, dI2, ddI2 = pollydiff(data['I2_real'], win, 3)
+
+    X = pd.DataFrame()
+    Y = pd.DataFrame()
+
+    X[0] = ddy1
+    X[1] = ddy2
+    X[2] = y1
+    X[3] = y2
+    
+    k = 6.02
+    Y[0] = I1
+    Y[1] = I2
+
+    return np.asmatrix(X), np.asmatrix(Y)
+
+def linreg(path):
+    w = len(os.listdir(path))
+    dir_entry = os.listdir(path)
+    dir_entry_path = dir_entry
+    k = 0
+    while k < w:
+        dir_entry_path[k] = os.path.join(path, dir_entry[k])
+        data = read(dir_entry_path[k])
+        X, Y = AB(data)
+        if k == 0:
+            A = X
+            B = Y
+        else:
+            A = np.concatenate((A, X))
+            B = np.concatenate((B, Y))        
+        k += 1
+
+    from sklearn.linear_model import LinearRegression
+    model = LinearRegression().fit(A, B)
+    C = model.coef_
+    return C
+
+path2 = 'C:/Users/Ilya Shirokov/Documents/Data1/data2kg'
+path1 = 'C:/Users/Ilya Shirokov/Documents/Data1/data1kg'
+path = 'C:/Users/Ilya Shirokov/Documents/Data1/data'
+
+C = linreg(path)
+C1 = linreg(path1)
+C2 = linreg(path2)
